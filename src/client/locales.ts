@@ -3,7 +3,7 @@
 /** English strings (the key-set source of truth for this pair). */
 export const en = {
   nav: 'Subscriptions',
-  intro: 'Log a subscription provider in or out. Login opens the provider’s authorization page in a new tab; headless setups can paste the callback URL or code instead.',
+  intro: 'Log a subscription provider in or out. Login opens the provider’s authorization page in a new tab; Kimi Code uses a device-code flow. Headless setups can paste the callback URL or code instead.',
   unavailable: 'Connection unavailable; subscription status cannot be loaded.',
   checking: 'Checking…',
   loginInProgress: 'Login in progress…',
@@ -46,7 +46,7 @@ export const en = {
 /** zh strings, one per {@link en} key. */
 export const zh = {
   nav: '订阅',
-  intro: '在此登录或退出订阅服务商。点击登录会在新标签页打开服务商的授权页面；无浏览器环境可改为粘贴回调 URL 或授权码。',
+  intro: '在此登录或退出订阅服务商。点击登录会在新标签页打开服务商的授权页面；Kimi Code 使用设备码流程。无浏览器环境可改为粘贴回调 URL 或授权码。',
   unavailable: '连接不可用，无法加载订阅状态。',
   checking: '查询中…',
   loginInProgress: '登录中…',

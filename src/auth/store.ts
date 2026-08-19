@@ -12,10 +12,10 @@ import { dirname } from 'node:path'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 
 /** Provider routes this plugin can serve. */
-export type ProviderId = 'codex' | 'claude' | 'grok'
+export type ProviderId = 'codex' | 'claude' | 'grok' | 'kimi' | 'antigravity'
 
 /** Every provider route, in display order. */
-export const PROVIDER_IDS: readonly ProviderId[] = ['codex', 'claude', 'grok']
+export const PROVIDER_IDS: readonly ProviderId[] = ['codex', 'claude', 'grok', 'kimi', 'antigravity']
 
 /** Stored ChatGPT/Codex subscription session. */
 export interface CodexSession {
@@ -57,15 +57,40 @@ export interface GrokSession {
   account?: string
 }
 
+/** Stored Kimi Code (Moonshot) subscription session. */
+export interface KimiSession {
+  accessToken: string
+  refreshToken: string
+  /** Epoch milliseconds at which the access token expires. */
+  expiresAt: number
+  /** Display account, when the usage/profile endpoint disclosed one. */
+  account?: string
+  /** Membership level from the usage endpoint (e.g. `LEVEL_INTERMEDIATE`). */
+  plan?: string
+}
+
+/** Stored Antigravity (Google) subscription session. */
+export interface AntigravitySession {
+  accessToken: string
+  refreshToken: string
+  /** Epoch milliseconds at which the access token expires. */
+  expiresAt: number
+  /** Cloud Code Assist project id required on every generate request. */
+  projectId: string
+  emailAddress?: string
+}
+
 /** The durable store shape: one optional session per provider. */
 export interface SessionMap {
   codex?: CodexSession
   claude?: ClaudeSession
   grok?: GrokSession
+  kimi?: KimiSession
+  antigravity?: AntigravitySession
 }
 
 /** Any stored session, for provider-agnostic plumbing. */
-export type StoredSession = CodexSession | ClaudeSession | GrokSession
+export type StoredSession = CodexSession | ClaudeSession | GrokSession | KimiSession | AntigravitySession
 
 /**
  * Absolute path of the auth store file.

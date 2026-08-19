@@ -121,8 +121,13 @@ export function toAnthropicMessages(messages: readonly TranslatableMessage[]): A
  * @param messages - conversation messages; their system-role text is appended.
  * @returns the system content blocks.
  */
-export function toAnthropicSystem(system?: string, messages?: readonly TranslatableMessage[]): Record<string, unknown>[] {
-  const blocks: Record<string, unknown>[] = [{ type: 'text', text: CLAUDE_CODE_IDENTITY }]
+export function toAnthropicSystem(
+  system?: string,
+  messages?: readonly TranslatableMessage[],
+  identity = CLAUDE_CODE_IDENTITY,
+): Record<string, unknown>[] {
+  const blocks: Record<string, unknown>[] = []
+  if (identity.length > 0) blocks.push({ type: 'text', text: identity })
   if (system !== undefined && system.length > 0) blocks.push({ type: 'text', text: system })
   for (const message of messages ?? []) {
     if (message.role !== 'system') continue

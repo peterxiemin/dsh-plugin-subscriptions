@@ -22,6 +22,14 @@ import {
   toAnthropicTools,
 } from '../src/translate/anthropic.js'
 import type { AnthropicStreamEvent } from '../src/translate/anthropic.js'
+import {
+  GeminiStreamTranslator,
+  toGeminiContents,
+  toGeminiSchema,
+  toGeminiSystem,
+  toGeminiTools,
+} from '../src/translate/gemini.js'
+import type { GeminiStreamPayload } from '../src/translate/gemini.js'
 import { resolveImages } from '../src/translate/resolved.js'
 
 let messageCounter = 0
@@ -368,4 +376,98 @@ test('Anthropic translator: error event mapping', () => {
     () => auth.push({ type: 'error', error: { type: 'authentication_error', message: 'bad token' } }),
     (error: unknown) => error instanceof LlmError && error.code === 'AUTH',
   )
+})
+
+test('toAnthropicSystem: empty identity omits the Claude Code block', () => {
+  assert.deepEqual(toAnthropicSystem('explicit', undefined, ''), [{ type: 'text', text: 'explicit' }])
+  assert.deepEqual(toAnthropicSystem(undefined, undefined, ''), [])
+})
+
+test('toGeminiContents: roles, tools, and images', () => {
+  const contents = toGeminiContents([
+    message('system', [{ type: 'text', text: 'ignored here' }]),
+    {
+      role: 'user',
+      content: [
+        { type: 'text', text: 'what is this?' },
+        { type: 'image', mediaType: 'image/png', dataBase64: 'aGk=' },
+      ],
+    },
+    message('assistant', [toolCall('call-1', 'bash', '{"cmd":"ls"}')]),
+    message('user', [toolResult('call-1', 'file-a')], { kind: 'tool', callId: CallId('call-1') }),
+  ])
+  assert.deepEqual(contents, [
+    {
+      role: 'user',
+      parts: [
+        { text: 'what is this?' },
+        { inlineData: { mimeType: 'image/png', data: 'aGk=' } },
+      ],
+    },
+    {
+      role: 'model',
+      parts: [{ functionCall: { name: 'bash', args: { cmd: 'ls' }, id: 'call-1' } }],
+    },
+    {
+      role: 'user',
+      parts: [{ functionResponse: { name: '', id: 'call-1', response: { result: 'file-a' } } }],
+    },
+  ])
+})
+
+test('toGeminiSystem and toGeminiTools', () => {
+  assert.deepEqual(toGeminiSystem('be helpful', [message('system', [{ type: 'text', text: 'from history' }])]), {
+    parts: [{ text: 'be helpful' }, { text: 'from history' }],
+  })
+  assert.equal(toGeminiSystem(), undefined)
+  assert.deepEqual(
+    toGeminiSchema({
+      type: 'object',
+      additionalProperties: false,
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      properties: { cmd: { type: 'string' }, tags: { type: 'array' } },
+      required: ['cmd', 'missing'],
+    }),
+    {
+      type: 'OBJECT',
+      properties: { cmd: { type: 'STRING' }, tags: { type: 'ARRAY', items: { type: 'STRING' } } },
+      required: ['cmd'],
+    },
+  )
+  assert.deepEqual(toGeminiTools([{ name: 'bash', description: 'run', parameters: { type: 'object' } }]), [
+    { functionDeclarations: [{ name: 'bash', description: 'run', parameters: { type: 'OBJECT' } }] },
+  ])
+})
+
+test('Gemini translator: text, thinking, and functionCall with usage before finish', () => {
+  const events: GeminiStreamPayload[] = [
+    { response: { candidates: [{ content: { parts: [{ thought: true, text: 'hmm' }] } }] } },
+    { response: { candidates: [{ content: { parts: [{ text: 'Hel' }] } }] } },
+    { response: { candidates: [{ content: { parts: [{ text: 'lo' }] } }] } },
+    {
+      response: {
+        candidates: [{
+          content: { parts: [{ functionCall: { name: 'bash', args: { cmd: 'ls' }, id: 'call-1' } }] },
+          finishReason: 'OTHER',
+        }],
+        usageMetadata: { promptTokenCount: 12, candidatesTokenCount: 4, thoughtsTokenCount: 1 },
+      },
+    },
+  ]
+  const chunks = drain(new GeminiStreamTranslator(), events)
+  assert.deepEqual(chunks, [
+    { type: 'block-start', index: 0, blockType: 'reasoning' },
+    { type: 'reasoning-delta', index: 0, text: 'hmm' },
+    { type: 'block-start', index: 1, blockType: 'text' },
+    { type: 'text-delta', index: 1, text: 'Hel' },
+    { type: 'text-delta', index: 1, text: 'lo' },
+    { type: 'block-start', index: 2, blockType: 'tool-call' },
+    { type: 'tool-call-delta', index: 2, id: 'call-1', name: 'bash', argumentsDelta: '' },
+    { type: 'tool-call-delta', index: 2, id: 'call-1', name: 'bash', argumentsDelta: '{"cmd":"ls"}' },
+    { type: 'block-end', index: 0, block: { type: 'reasoning', text: 'hmm' } },
+    { type: 'block-end', index: 1, block: { type: 'text', text: 'Hello' } },
+    { type: 'block-end', index: 2, block: { type: 'tool-call', id: 'call-1', name: 'bash', arguments: '{"cmd":"ls"}' } },
+    { type: 'usage', usage: { inputTokens: 12, outputTokens: 5 } },
+    { type: 'finish', reason: { kind: 'tool-calls' } },
+  ])
 })

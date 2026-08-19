@@ -11,9 +11,11 @@ import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import { CodexAdapter, fetchCodexModels } from '../src/providers/codex.js'
 import { GrokAdapter } from '../src/providers/grok.js'
 import { ClaudeAdapter } from '../src/providers/claude.js'
+import { KimiAdapter } from '../src/providers/kimi.js'
+import { AntigravityAdapter } from '../src/providers/antigravity.js'
 import { ModelCatalogCache, TokenManager } from '../src/providers/common.js'
 import type { CatalogPersistence, CatalogSnapshot, FetchFn } from '../src/providers/common.js'
-import type { ClaudeSession, CodexSession, GrokSession } from '../src/auth/store.js'
+import type { AntigravitySession, ClaudeSession, CodexSession, GrokSession, KimiSession } from '../src/auth/store.js'
 
 const STATIC_CODEX = [{ id: 'gpt-5.1-codex', name: 'GPT-5.1 Codex' }]
 const STATIC_CLAUDE = [{ id: 'claude-opus-4-5', name: 'Claude Opus 4.5' }]
@@ -36,6 +38,17 @@ const grokSession: GrokSession = {
   refreshToken: 'rt',
   expiresAt: Date.now() + 3_600_000,
   tokenEndpoint: 'https://auth.x.ai/token',
+}
+const kimiSession: KimiSession = {
+  accessToken: 'at',
+  refreshToken: 'rt',
+  expiresAt: Date.now() + 3_600_000,
+}
+const antigravitySession: AntigravitySession = {
+  accessToken: 'at',
+  refreshToken: 'rt',
+  expiresAt: Date.now() + 3_600_000,
+  projectId: 'proj-1',
 }
 
 /** A TokenManager over an in-memory session; refresh never fires in these tests. */
@@ -114,7 +127,7 @@ const CODEX_MODELS_PAYLOAD = {
   ],
 }
 
-test('listModels returns [] when logged out (codex, claude, grok)', async () => {
+test('listModels returns [] when logged out (codex, claude, grok, kimi, antigravity)', async () => {
   const codex = codexAdapter({})
   assert.deepEqual(await codex.listModels('codex'), [])
   const claude = new ClaudeAdapter({
@@ -132,6 +145,20 @@ test('listModels returns [] when logged out (codex, claude, grok)', async () => 
     fetchFn: fakeFetch({ data: [{ id: 'grok-9' }] }).fetchFn,
   })
   assert.deepEqual(await grok.listModels('grok'), [])
+  const kimi = new KimiAdapter({
+    models: [{ id: 'k3', name: 'Kimi K3' }],
+    streamIdleTimeoutMs: 1000,
+    tokens: memoryTokens<KimiSession>(undefined),
+    discovery: false,
+  })
+  assert.deepEqual(await kimi.listModels('kimi'), [])
+  const antigravity = new AntigravityAdapter({
+    models: [{ id: 'gemini-3-pro-high', name: 'Gemini 3 Pro High' }],
+    streamIdleTimeoutMs: 1000,
+    tokens: memoryTokens<AntigravitySession>(undefined),
+    discovery: false,
+  })
+  assert.deepEqual(await antigravity.listModels('antigravity'), [])
 })
 
 test('codex discovery maps, filters hidden entries, and sorts by priority', async () => {
@@ -239,6 +266,56 @@ test('modalities: codex and claude declare image input; grok gates text-only mod
   assert.deepEqual(grokModels[2].inputModalities, ['text'])
   assert.deepEqual((await grok.resolveModel('grok', 'grok-4.6')).inputModalities, ['text', 'image'])
   assert.deepEqual((await grok.resolveModel('grok', 'grok-code-fast-1')).inputModalities, ['text'])
+})
+
+test('kimi discovery maps the data array and falls back when empty', async () => {
+  const { fetchFn } = fakeFetch({ data: [{ id: 'k3', display_name: 'Kimi K3' }, { id: 'k3-256k' }] })
+  const adapter = new KimiAdapter({
+    models: [{ id: 'kimi-for-coding', name: 'Kimi K2.7 Code' }],
+    streamIdleTimeoutMs: 1000,
+    tokens: memoryTokens(kimiSession),
+    discovery: true,
+    fetchFn,
+  })
+  const models = await adapter.listModels('kimi')
+  assert.deepEqual(models.map(model => model.id), ['k3', 'k3-256k'])
+  assert.equal(models[0].name, 'Kimi K3')
+  const resolved = await adapter.resolveModel('kimi', 'k3')
+  assert.ok(resolved.reasoning !== undefined)
+})
+
+test('antigravity discovery maps allowedModels and falls back on failure', async () => {
+  const warnings: string[] = []
+  const { fetchFn } = fakeFetch({
+    allowedModels: [
+      { modelId: 'gemini-3-pro-high', displayName: 'Gemini 3 Pro High' },
+      { id: 'claude-sonnet-4-5', displayName: 'Claude Sonnet 4.5' },
+    ],
+  })
+  const adapter = new AntigravityAdapter({
+    models: [{ id: 'gemini-3-flash', name: 'Gemini 3 Flash' }],
+    streamIdleTimeoutMs: 1000,
+    tokens: memoryTokens(antigravitySession),
+    discovery: true,
+    fetchFn,
+    onWarn: message => { warnings.push(message) },
+  })
+  const models = await adapter.listModels('antigravity')
+  assert.deepEqual(models.map(model => model.id), ['gemini-3-pro-high', 'claude-sonnet-4-5'])
+  const resolved = await adapter.resolveModel('antigravity', 'gemini-3-pro-high')
+  assert.ok(resolved.reasoning !== undefined)
+
+  const failing = new AntigravityAdapter({
+    models: [{ id: 'gemini-3-flash', name: 'Gemini 3 Flash' }],
+    streamIdleTimeoutMs: 1000,
+    tokens: memoryTokens(antigravitySession),
+    discovery: true,
+    fetchFn: fakeFetch({ error: 'boom' }, 500).fetchFn,
+    onWarn: message => { warnings.push(message) },
+  })
+  const fallback = await failing.listModels('antigravity')
+  assert.deepEqual(fallback.map(model => model.id), ['gemini-3-flash'])
+  assert.equal(warnings.some(message => /antigravity model discovery failed/.test(message)), true)
 })
 
 test('modalities: config entry inputModalities win over the provider default', async () => {

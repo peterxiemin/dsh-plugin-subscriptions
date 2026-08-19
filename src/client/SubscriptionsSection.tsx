@@ -25,7 +25,7 @@ const SUBSCRIPTIONS_AUTH_CHANNEL = '/subscriptions-auth'
 const POLL_INTERVAL_MS = 2000
 
 /** Subscription provider ids, fixed by the node half's OAuth adapters. */
-export type SubscriptionProvider = 'codex' | 'claude' | 'grok'
+export type SubscriptionProvider = 'codex' | 'claude' | 'grok' | 'kimi' | 'antigravity'
 
 /** One provider's login state as answered by the `status` endpoint. */
 export interface ProviderStatus {
@@ -80,6 +80,8 @@ const PROVIDERS: readonly { id: SubscriptionProvider; name: string }[] = [
   { id: 'codex', name: 'Codex (ChatGPT)' },
   { id: 'claude', name: 'Claude' },
   { id: 'grok', name: 'Grok (X Premium)' },
+  { id: 'kimi', name: 'Kimi Code' },
+  { id: 'antigravity', name: 'Antigravity (Google)' },
 ]
 
 /** Business error returned by the `/subscriptions-auth` channel (error branch message). */
@@ -240,7 +242,7 @@ export function SubscriptionsSection(props: SubscriptionsSectionProps) {
   const [statuses, setStatuses] = useState<Partial<Record<SubscriptionProvider, ProviderStatus>>>({})
   const [errors, setErrors] = useState<Partial<Record<SubscriptionProvider, string>>>({})
   const [manualDrafts, setManualDrafts] = useState<Record<SubscriptionProvider, string>>({
-    codex: '', claude: '', grok: '',
+    codex: '', claude: '', grok: '', kimi: '', antigravity: '',
   })
   const [usages, setUsages] = useState<Partial<Record<SubscriptionProvider, ProviderUsage>>>({})
   const [usageErrors, setUsageErrors] = useState<Partial<Record<SubscriptionProvider, string>>>({})

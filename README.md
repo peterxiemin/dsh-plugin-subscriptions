@@ -2,7 +2,7 @@
 
 English | [中文](README.zh.md)
 
-Use your **ChatGPT (Codex)**, **Claude**, and **Grok (X Premium)** subscriptions as LLM providers in [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) — no API keys. Codex and Grok log in via OAuth in the dsh web UI (Settings → Subscriptions); Claude imports credentials directly from an existing Claude Code session (macOS Keychain or `~/.claude/.credentials.json`). Tokens live at `~/.dsh/plugins/subscriptions/auth.json` (mode 0600) and refresh automatically.
+Use your **ChatGPT (Codex)**, **Claude**, **Grok (X Premium)**, **Kimi Code**, and **Antigravity (Google)** subscriptions as LLM providers in [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) — no API keys. Codex, Grok, and Antigravity log in via OAuth in the dsh web UI (Settings → Subscriptions); Kimi Code uses a device-code flow in the same page; Claude imports credentials directly from an existing Claude Code session (macOS Keychain or `~/.claude/.credentials.json`). Tokens live at `~/.dsh/plugins/subscriptions/auth.json` (mode 0600) and refresh automatically.
 
 ## Demo
 
@@ -37,10 +37,12 @@ The `video_generate` tool plays the generated clip inline:
 | `codex`  | ChatGPT Plus/Pro  | live catalog from `chatgpt.com/backend-api/codex/models` |
 | `claude` | Claude Pro/Max    | all models available in your subscription (Opus, Sonnet, Haiku, Fable — static catalog, updated with the plugin) |
 | `grok`   | X Premium (xAI)   | live catalog from `api.x.ai/v1/models` (chat models only); reasoning efforts from the Grok CLI catalog (`cli-chat-proxy.grok.com/v1/models`) |
+| `kimi`   | Kimi Code         | live catalog from `api.kimi.com/coding/v1/models` (Anthropic Messages); device-code OAuth against `auth.kimi.com` |
+| `antigravity` | Google Antigravity | Gemini-style Cloud Code Assist gateway (`cloudcode-pa.googleapis.com`); Google OAuth with the Antigravity IDE client |
 
 Only logged-in providers appear in the session model picker; the lists above refresh on login/logout. Vision-capable models declare `['text', 'image']` input modalities, and image content is translated to each provider's wire format.
 
-Logged-in cards also show **subscription usage** — per rate-limit window (5-hour session, weekly, and per-model weekly where the plan has one) with the used percentage, a progress bar, and the reset time, plus a Refresh button. Codex usage comes from `chatgpt.com/backend-api/wham/usage` (also reports the plan), Claude usage from `api.anthropic.com/api/oauth/usage`, and Grok usage from the Grok Build CLI proxy's `cli-chat-proxy.grok.com/v1/billing` (the source of the CLI's `/usage` panel; reports the shared weekly pool and the subscription tier).
+Logged-in cards also show **subscription usage** — per rate-limit window (5-hour session, weekly, and per-model weekly where the plan has one) with the used percentage, a progress bar, and the reset time, plus a Refresh button. Codex usage comes from `chatgpt.com/backend-api/wham/usage` (also reports the plan), Claude usage from `api.anthropic.com/api/oauth/usage`, Grok usage from the Grok Build CLI proxy's `cli-chat-proxy.grok.com/v1/billing` (the source of the CLI's `/usage` panel; reports the shared weekly pool and the subscription tier), and Kimi usage from `api.kimi.com/coding/v1/usages`. Antigravity has no documented usage endpoint.
 
 Also included, registered when the matching provider is enabled:
 
@@ -101,8 +103,8 @@ Either way, restart `dsh web` afterwards so the new version loads.
 ## Use
 
 1. `dsh web`, open the printed URL.
-2. Settings → **Subscriptions**: click **Connect** on a provider. For Claude, credentials are imported instantly from Claude Code (you must have run `claude` and logged in at least once). For Codex and Grok, authorize in the opened browser tab; if the browser flow can't complete (headless host), expand the manual fallback and paste the callback URL or code.
-3. In any session, open the model picker (`/model`) and choose a model under **ChatGPT (Codex)** / **Claude (Subscription)** / **Grok (Subscription)**.
+2. Settings → **Subscriptions**: click **Connect** on a provider. For Claude, credentials are imported instantly from Claude Code (you must have run `claude` and logged in at least once). For Codex, Grok, and Antigravity, authorize in the opened browser tab; if the browser flow can't complete (headless host), expand the manual fallback and paste the callback URL or code. For Kimi Code, approve the device-code page that opens.
+3. In any session, open the model picker (`/model`) and choose a model under **ChatGPT (Codex)** / **Claude (Subscription)** / **Grok (Subscription)** / **Kimi Code (Subscription)** / **Antigravity (Google)**.
 
 Not logged in? The provider stays out of the picker, and requests fail with `MISSING_CREDENTIAL` pointing at the Settings page; nothing else breaks.
 
@@ -112,7 +114,7 @@ Not logged in? The provider stays out of the picker, and requests fail with `MIS
 - id: llm-subscriptions
   name: dsh-plugin-subscriptions
   config:
-    providers: [codex, claude]        # subset; default all three
+    providers: [codex, claude]        # subset; default all five
     streamIdleTimeoutMs: 300000
     models:                            # override the discovered/built-in catalogs
       codex:
@@ -134,8 +136,8 @@ After `pnpm build`, restart `dsh web` to pick up changes.
 ## Layout
 
 - `src/index.ts` — plugin entry: config schema, adapter registration, auth-change re-announce, RPC wiring
-- `src/auth/` — PKCE/JWT helpers, token store, OAuth flow engine (temp loopback callback server), Claude Code credential reader (Keychain/file), `/subscriptions-auth` RPC channel
+- `src/auth/` — PKCE/JWT helpers, token store, OAuth + device-code flow engines, Claude Code credential reader (Keychain/file), `/subscriptions-auth` RPC channel
 - `src/providers/` — per-provider OAuth constants/exchange/refresh + `LlmAdapter`s
-- `src/translate/` — dsh `Message[]` ⟷ OpenAI Responses / Anthropic Messages wire formats, SSE → `StreamChunk`
+- `src/translate/` — dsh `Message[]` ⟷ OpenAI Responses / Anthropic Messages / Gemini wire formats, SSE → `StreamChunk`
 - `src/tools/` — `x_search`, `image_generate`, and `video_generate`
 - `src/client/` — the Settings → Subscriptions page (browser half, zh/en, theme-token aware)

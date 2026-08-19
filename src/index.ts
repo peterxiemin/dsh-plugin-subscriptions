@@ -1,6 +1,6 @@
 /**
  * dsh-plugin-subscriptions: register OAuth-subscription LLM providers
- * (ChatGPT/Codex, Claude, Grok) on `ctx.llm`, and expose the `/subscriptions-auth`
+ * (ChatGPT/Codex, Claude, Grok, Kimi Code, Antigravity) on `ctx.llm`, and expose the `/subscriptions-auth`
  * RPC channel the web Settings page uses to run the logins. The token store
  * lives at `~/.dsh/plugins/subscriptions/auth.json`; the channel registers only when
  * a host `connection` service exists, so headless compositions load fine.
@@ -14,6 +14,7 @@ import type { AdapterRegistrationHandle } from '@deepseek-ai/dsh-llm'
 // Type-only: activates the `ctx.tools` Context merge for the inject block.
 import type {} from '@deepseek-ai/dsh-tools'
 import type { AttachmentStore, ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
+import { DeviceFlowManager } from './auth/device-flow.js'
 import { OAuthFlowManager, type OAuthAttempt } from './auth/oauth-flow.js'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -27,9 +28,11 @@ import {
   PROVIDER_IDS,
 } from './auth/store.js'
 import type {
+  AntigravitySession,
   ClaudeSession,
   CodexSession,
   GrokSession,
+  KimiSession,
   ProviderId,
   SessionMap,
   StoredSession,
@@ -65,13 +68,40 @@ import {
   isGrokPermanentRefreshError,
   refreshGrok,
 } from './providers/grok.js'
+import {
+  KimiAdapter,
+  KIMI_DEFAULT_MODELS,
+  KIMI_PREEMPT_MS,
+  fetchKimiUsage,
+  isKimiPermanentRefreshError,
+  pollKimiDeviceToken,
+  refreshKimi,
+  startKimiDeviceAuthorization,
+} from './providers/kimi.js'
+import {
+  AntigravityAdapter,
+  ANTIGRAVITY_DEFAULT_MODELS,
+  ANTIGRAVITY_PREEMPT_MS,
+  antigravityFlow,
+  exchangeAntigravityCode,
+  fetchAntigravityUsage,
+  isAntigravityPermanentRefreshError,
+  refreshAntigravity,
+} from './providers/antigravity.js'
 import { createXSearchTool } from './tools/x-search.js'
 import { createImageGenerateTool } from './tools/image-generate.js'
 import { createVideoGenerateTool, videosDirectory } from './tools/video-generate.js'
 
 export type { ModelEntry, ProviderUsage, UsageWindow } from './providers/common.js'
 export type { ProviderStatus } from './auth/rpc.js'
-export type { ClaudeSession, CodexSession, GrokSession, ProviderId } from './auth/store.js'
+export type {
+  AntigravitySession,
+  ClaudeSession,
+  CodexSession,
+  GrokSession,
+  KimiSession,
+  ProviderId,
+} from './auth/store.js'
 
 export const name = 'dsh-plugin-subscriptions'
 export const inject = ['llm']
@@ -81,7 +111,7 @@ export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000
 
 /** Plugin config, validated by the same-named schemastery schema. */
 export interface Config {
-  /** Provider routes to register; defaults to all three. */
+  /** Provider routes to register; defaults to all five. */
   providers?: ProviderId[]
   /** Maximum provider idle time while one stream read is outstanding (default five minutes). */
   streamIdleTimeoutMs?: number
@@ -90,10 +120,12 @@ export interface Config {
     codex?: ModelEntry[]
     claude?: ModelEntry[]
     grok?: ModelEntry[]
+    kimi?: ModelEntry[]
+    antigravity?: ModelEntry[]
   }
 }
 
-const providerIdSchema = z.union(['codex', 'claude', 'grok'])
+const providerIdSchema = z.union(['codex', 'claude', 'grok', 'kimi', 'antigravity'])
 const modelEntrySchema: z<ModelEntry> = z.object({
   id: z.string().required(),
   name: z.string(),
@@ -103,12 +135,14 @@ const modelEntrySchema: z<ModelEntry> = z.object({
 })
 
 export const Config: z<Config> = z.object({
-  providers: z.array(providerIdSchema).default(['codex', 'claude', 'grok']),
+  providers: z.array(providerIdSchema).default(['codex', 'claude', 'grok', 'kimi', 'antigravity']),
   streamIdleTimeoutMs: z.number().min(1).default(DEFAULT_STREAM_IDLE_TIMEOUT_MS),
   models: z.object({
     codex: z.array(modelEntrySchema),
     claude: z.array(modelEntrySchema),
     grok: z.array(modelEntrySchema),
+    kimi: z.array(modelEntrySchema),
+    antigravity: z.array(modelEntrySchema),
   }),
 })
 
@@ -130,6 +164,8 @@ const DEFAULT_MODELS: Record<ProviderId, ModelEntry[]> = {
     { id: 'grok-4-fast-reasoning', name: 'Grok 4 Fast Reasoning' },
     { id: 'grok-code-fast-1', name: 'Grok Code Fast 1' },
   ],
+  kimi: KIMI_DEFAULT_MODELS,
+  antigravity: ANTIGRAVITY_DEFAULT_MODELS,
 }
 
 /** Validate and detach the model catalog for every provider. */
@@ -141,7 +177,13 @@ function resolveCatalog(models: Config['models']): Record<ProviderId, ModelEntry
     const entries = configured !== undefined && configured.length > 0 ? configured : DEFAULT_MODELS[provider]
     return validateModels(entries, `${name}: models.${provider}`)
   }
-  return { codex: resolve('codex'), claude: resolve('claude'), grok: resolve('grok') }
+  return {
+    codex: resolve('codex'),
+    claude: resolve('claude'),
+    grok: resolve('grok'),
+    kimi: resolve('kimi'),
+    antigravity: resolve('antigravity'),
+  }
 }
 
 /** The display account of a stored session, for the status endpoint. */
@@ -156,6 +198,8 @@ function accountOf(provider: ProviderId, session: StoredSession | undefined): st
     }
     case 'claude': return (session as ClaudeSession).emailAddress
     case 'grok': return (session as GrokSession).account
+    case 'kimi': return (session as KimiSession).account
+    case 'antigravity': return (session as AntigravitySession).emailAddress
   }
 }
 
@@ -173,6 +217,7 @@ class SubscriptionsAuthController implements AuthController {
 
   constructor(
     private readonly flows: OAuthFlowManager,
+    private readonly devices: DeviceFlowManager,
     /** Announces a provider's auth-state change so catalog readers re-query (fires `llm/adapters-updated`). */
     private readonly onAuthChanged: (provider: ProviderId) => void,
     /** Lazy attachment-store lookup for the `image` endpoint. */
@@ -210,7 +255,7 @@ class SubscriptionsAuthController implements AuthController {
     const detail = this.lastError.get(provider)
     return {
       loggedIn: session !== undefined,
-      busy: this.flows.isBusy(provider),
+      busy: this.flows.isBusy(provider) || this.devices.isBusy(provider),
       ...session === undefined ? {} : { expiresAt: session.expiresAt },
       ...account === undefined ? {} : { account },
       ...detail === undefined ? {} : { detail },
@@ -228,7 +273,20 @@ class SubscriptionsAuthController implements AuthController {
       }
       throw new Error('Claude Code credentials not found. Run "claude" first to log in.')
     }
-    const spec = provider === 'grok' ? await grokFlow() : codexFlow
+    if (provider === 'kimi') {
+      const attempt = await this.devices.start(
+        'kimi',
+        startKimiDeviceAuthorization,
+        pollKimiDeviceToken,
+      )
+      void this.completeDevice('kimi', attempt.waitSession())
+      return { authorizeUrl: attempt.authorizeUrl }
+    }
+    const spec = provider === 'grok'
+      ? await grokFlow()
+      : provider === 'antigravity'
+        ? antigravityFlow
+        : codexFlow
     const attempt = await this.flows.start(provider, spec)
     void this.complete(provider, attempt)
     return { authorizeUrl: attempt.authorizeUrl }
@@ -250,6 +308,20 @@ class SubscriptionsAuthController implements AuthController {
     }
   }
 
+  /** Drive a device-code attempt to a stored session. */
+  private async completeDevice(provider: ProviderId, wait: Promise<StoredSession>): Promise<void> {
+    try {
+      const session = await wait
+      await this.persist(provider, session)
+      this.lastError.delete(provider)
+      this.onAuthChanged(provider)
+    } catch (error) {
+      if (!(error instanceof Error && error.message === 'login cancelled')) {
+        this.lastError.set(provider, errorChain(error))
+      }
+    }
+  }
+
   private exchange(provider: ProviderId, code: string, attempt: OAuthAttempt): Promise<StoredSession> {
     switch (provider) {
       case 'codex':
@@ -258,6 +330,10 @@ class SubscriptionsAuthController implements AuthController {
         return exchangeClaudeCode(code, attempt.pkce.verifier, attempt.redirectUri, attempt.state)
       case 'grok':
         return exchangeGrokCode(code, attempt.pkce.verifier, attempt.redirectUri, attempt.pkce.challenge)
+      case 'antigravity':
+        return exchangeAntigravityCode(code, attempt.pkce.verifier, attempt.redirectUri)
+      case 'kimi':
+        return Promise.reject(new Error('kimi uses the device-code flow, not an authorization code'))
     }
   }
 
@@ -267,10 +343,15 @@ class SubscriptionsAuthController implements AuthController {
       case 'codex': return saveSession('codex', session as SessionMap['codex'] & object)
       case 'claude': return saveSession('claude', session as SessionMap['claude'] & object)
       case 'grok': return saveSession('grok', session as SessionMap['grok'] & object)
+      case 'kimi': return saveSession('kimi', session as SessionMap['kimi'] & object)
+      case 'antigravity': return saveSession('antigravity', session as SessionMap['antigravity'] & object)
     }
   }
 
   manual(provider: ProviderId, input: string): Promise<void> {
+    if (provider === 'kimi') {
+      return Promise.reject(new Error('Kimi Code login is a device-code flow; approve it in the opened tab'))
+    }
     const attempt = this.flows.pending(provider)
     if (attempt === undefined) {
       return Promise.reject(new Error(`no ${provider} login attempt is in progress`))
@@ -281,11 +362,13 @@ class SubscriptionsAuthController implements AuthController {
 
   cancel(provider: ProviderId): Promise<void> {
     this.flows.pending(provider)?.cancel()
+    this.devices.pending(provider)?.cancel()
     return Promise.resolve()
   }
 
   async logout(provider: ProviderId): Promise<void> {
     this.flows.pending(provider)?.cancel()
+    this.devices.pending(provider)?.cancel()
     await deleteSession(provider)
     this.lastError.delete(provider)
     this.onAuthChanged(provider)
@@ -306,6 +389,7 @@ export function apply(ctx: Context, config: Config): void {
     PROVIDER_IDS.filter(provider => (config.models?.[provider]?.length ?? 0) > 0),
   )
   const flows = new OAuthFlowManager()
+  const devices = new DeviceFlowManager()
   const onWarn = (message: string): void => {
     ctx.logger.warn(`dsh-plugin-subscriptions: ${message}`)
   }
@@ -410,10 +494,59 @@ export function apply(ctx: Context, config: Config): void {
         })))
         break
       }
+      case 'kimi': {
+        const tokens = new TokenManager<KimiSession>({
+          displayName: 'Kimi Code (Subscription)',
+          preemptMs: KIMI_PREEMPT_MS,
+          load: () => getSession('kimi'),
+          save: session => saveSession('kimi', session),
+          remove: () => deleteSession('kimi'),
+          refresh: refreshKimi,
+          isPermanent: isKimiPermanentRefreshError,
+          onRemoved: () => { authChanged('kimi') },
+        })
+        usageFetchers.kimi = async signal => fetchKimiUsage(await tokens.session(), fetch, signal)
+        handles.set('kimi', ctx.llm.registerAdapter(['kimi'], new KimiAdapter({
+          models: catalog.kimi,
+          streamIdleTimeoutMs,
+          tokens,
+          discovery: !overridden.has('kimi'),
+          onWarn,
+          resolveAttachments,
+          catalogStore: catalogStore('kimi'),
+        })))
+        break
+      }
+      case 'antigravity': {
+        const tokens = new TokenManager<AntigravitySession>({
+          displayName: 'Antigravity (Google)',
+          preemptMs: ANTIGRAVITY_PREEMPT_MS,
+          load: () => getSession('antigravity'),
+          save: session => saveSession('antigravity', session),
+          remove: () => deleteSession('antigravity'),
+          refresh: refreshAntigravity,
+          isPermanent: isAntigravityPermanentRefreshError,
+          onRemoved: () => { authChanged('antigravity') },
+        })
+        usageFetchers.antigravity = async signal => {
+          void signal
+          return fetchAntigravityUsage()
+        }
+        handles.set('antigravity', ctx.llm.registerAdapter(['antigravity'], new AntigravityAdapter({
+          models: catalog.antigravity,
+          streamIdleTimeoutMs,
+          tokens,
+          discovery: !overridden.has('antigravity'),
+          onWarn,
+          resolveAttachments,
+          catalogStore: catalogStore('antigravity'),
+        })))
+        break
+      }
     }
   }
 
-  registerAuthRpc(ctx, new SubscriptionsAuthController(flows, authChanged, resolveAttachments, usageFetchers))
+  registerAuthRpc(ctx, new SubscriptionsAuthController(flows, devices, authChanged, resolveAttachments, usageFetchers))
 
   // Proactively keep the Claude session synced with Claude Code's own store
   // (Keychain/file) every 5 minutes, so a session left idle between requests

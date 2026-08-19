@@ -19,10 +19,12 @@ process.env.DSH_HOME ??= mkdtempSync(join(tmpdir(), 'router-usage-test-'))
 const { fetchCodexUsage } = await import('../src/providers/codex.js')
 const { fetchClaudeUsage } = await import('../src/providers/claude.js')
 const { fetchGrokUsage, grokTierName } = await import('../src/providers/grok.js')
+const { fetchKimiUsage } = await import('../src/providers/kimi.js')
+const { fetchAntigravityUsage } = await import('../src/providers/antigravity.js')
 const plugin = await import('../src/index.js')
 
 import type { FetchFn } from '../src/providers/common.js'
-import type { ClaudeSession, CodexSession, GrokSession } from '../src/auth/store.js'
+import type { ClaudeSession, CodexSession, GrokSession, KimiSession } from '../src/auth/store.js'
 
 const codexSession: CodexSession = {
   accessToken: 'at',
@@ -41,6 +43,11 @@ const grokSession: GrokSession = {
   refreshToken: 'rt',
   expiresAt: Date.now() + 3_600_000,
   tokenEndpoint: 'https://auth.x.ai/token',
+}
+const kimiSession: KimiSession = {
+  accessToken: 'at',
+  refreshToken: 'rt',
+  expiresAt: Date.now() + 3_600_000,
 }
 
 /** A fetch implementation answering one JSON payload; records the request. */
@@ -249,6 +256,30 @@ test('fetchGrokUsage falls back to the access-token tier when billing omits subs
   })
   const usage = await fetchGrokUsage(session, fetchFn)
   assert.equal(usage.plan, 'SuperGrok Heavy')
+})
+
+test('fetchKimiUsage maps overall and session windows plus plan', async () => {
+  const { fetchFn, requests } = fakeFetch({
+    usage: { limit: '100', remaining: '74', resetTime: '2026-02-11T17:32:50.757941Z' },
+    limits: [{
+      window: { duration: 300, timeUnit: 'TIME_UNIT_MINUTE' },
+      detail: { limit: '100', remaining: '85', resetTime: '2026-02-07T12:32:50.757941Z' },
+    }],
+    user: { membership: { level: 'LEVEL_INTERMEDIATE' } },
+  })
+  const usage = await fetchKimiUsage(kimiSession, fetchFn)
+  assert.equal(usage.supported, true)
+  assert.equal(usage.plan, 'Pro')
+  assert.equal(usage.windows?.length, 2)
+  assert.equal(usage.windows?.[0].kind, 'weekly')
+  assert.equal(Math.round(usage.windows?.[0].usedPercent ?? 0), 26)
+  assert.equal(usage.windows?.[1].kind, 'session')
+  assert.equal(Math.round(usage.windows?.[1].usedPercent ?? 0), 15)
+  assert.equal(requests[0].url, 'https://api.kimi.com/coding/v1/usages')
+})
+
+test('fetchAntigravityUsage reports unsupported', async () => {
+  assert.deepEqual(await fetchAntigravityUsage(), { supported: false })
 })
 
 test('fetchGrokUsage tolerates a null config and non-2xx responses', async () => {
